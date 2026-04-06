@@ -1,6 +1,7 @@
 # =============================================================================
 # RentMaq Pro — Docker Compose
 # Stack: .NET 8 API + PostgreSQL 16 / PostGIS 3.4
+# Variables centralizadas en .env (ver .env.example como referencia)
 # =============================================================================
 
 services:
@@ -13,15 +14,15 @@ services:
     container_name: rentmaq-db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: rentmaq_user
-      POSTGRES_PASSWORD: rentmaq_secret
-      POSTGRES_DB: rentmaq_db
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
     ports:
-      - "5432:5432"
+      - "${DB_PORT}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U rentmaq_user -d rentmaq_db"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -39,10 +40,10 @@ services:
     ports:
       - "5000:8080"
     environment:
-      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT}
       ConnectionStrings__RentMaqDb: >-
-        Host=db;Port=5432;Database=rentmaq_db;
-        Username=rentmaq_user;Password=rentmaq_secret
+        Host=db;Port=5432;Database=${DB_NAME};
+        Username=${DB_USER};Password=${DB_PASSWORD}
     depends_on:
       db:
         condition: service_healthy
