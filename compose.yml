@@ -1,0 +1,51 @@
+# =============================================================================
+# RentMaq Pro — Docker Compose
+# Stack: .NET 8 API + PostgreSQL 16 / PostGIS 3.4
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16 + PostGIS 3.4 (requerido por ADR-001: GEOGRAPHY, ST_Covers)
+  # Npgsql 8.0.x soporta PG 12–16; PG 16 es la versión estable más reciente.
+  # ---------------------------------------------------------------------------
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: rentmaq-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: rentmaq_user
+      POSTGRES_PASSWORD: rentmaq_secret
+      POSTGRES_DB: rentmaq_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rentmaq_user -d rentmaq_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # RentMaq API (.NET 8)
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: src/Dockerfile
+      target: final
+    container_name: rentmaq-api
+    restart: unless-stopped
+    ports:
+      - "5000:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__RentMaqDb: >-
+        Host=db;Port=5432;Database=rentmaq_db;
+        Username=rentmaq_user;Password=rentmaq_secret
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
