@@ -1,0 +1,179 @@
+You are working on RentMaq Pro, an enterprise light machinery rental system.
+Stack: .NET Core 8, PostgreSQL + PostGIS, Angular Material.
+Full architecture reference: docs/ADR-001-spec.md
+
+# CRITICAL RULES — NEVER VIOLATE
+
+## Rule 1: No-Join Rule (Domain Decoupling)
+
+Two state machines run concurrently and independently:
+- `equipment.current_status` (physical asset: AVAILABLE, RENTED, IN_MAINTENANCE, DECOMMISSIONED)
+- `rental_contracts.status` (financial contract: DRAFT, RESERVED, ACTIVE, SUSPENDED_MAINTENANCE, RETURNING, INSPECTION, OVERDUE, IN_DISPUTE, CLOSED)
+
+Financial workers (FinancialImpactWorker, CfdiLifecycleWorker, ContractLifecycleWorker) MUST NEVER query `equipment.current_status`.
+Operational workers (AlertEvaluationWorker, MaintenanceOrchestrationWorker, ComplianceDocumentWorker) MUST NEVER query `rental_contracts.status`.
+
+Cross-domain communication happens ONLY through intermediate tables (telemetry_alerts, damage_assessments, extraordinary_charges) or message bus events. No direct JOINs. No cross-repository injection.
+
+Reason: A repaired equipment (AVAILABLE) must be rentable to new clients while a previous contract is still IN_DISPUTE. Coupling state machines blocks asset monetization.
+
+## Rule 2: Three Mutually Exclusive Fiscal Flows
+
+Damage charges NEVER substitute, modify, or cancel the original rental invoice. They are fiscally independent events.
+
+Flow 1 — Damage Charge (tenant negligence):
+- Emit a NEW, independent CFDI Ingreso (cfdi_type = 'I').
+- Deduct from deposit (migrates LIABILITY → RECOGNIZED_INCOME).
+- Original monthly rental invoice is UNTOUCHED.
+
+Flow 2 — Substitution (administrative error only):
+- Cancel original CFDI with cancel_reason = '01'.
+- Reissue with relation_type = '04'.
+- ONLY for corrections (wrong RFC, wrong amount, wrong postal code). NEVER for damage charges.
+
+Flow 3 — Credit Note (landlord-fault compensation):
+- Emit CFDI Egreso with relation_type = '01'.
+- NEVER used to void complete transactions (would duplicate taxable income at SAT).
+
+When writing code that touches `cfdi_documents`: identify which of the three flows applies. If it doesn't fit cleanly into exactly one, the design is wrong.
+
+## Rule 3: LOTO Gatekeeper (NOM-004-STPS-1999)
+
+Equipment in IN_MAINTENANCE CANNOT transition to AVAILABLE without BOTH:
+1. `maintenance_work_orders.loto_applied = TRUE`
+2. `maintenance_work_orders.protectors_reinstalled = TRUE`
+
+NEVER create endpoints or admin bypasses that skip these validations.
+NEVER auto-unlock on timeout. If order exceeds `loto_timeout_hours` in LOTO_APPLIED state, ALERT the supervisor but do NOT unlock.
+
+Reason: NOM-004 Art. 7.2.2 compliance. Skipping LOTO risks operator lives. This is criminal liability, not a UX issue.
+
+## Rule 4: Geofencing = Alert, NEVER State Transition Trigger
+
+When GPS reports equipment outside the authorized polygon (geofences.perimeter):
+- INSERT a GEOFENCE_BREACH alert in telemetry_alerts. ✅
+- DO NOT transition rental_contracts.status to RETURNING. ❌
+
+Transition to RETURNING always requires intentional human action (client on Portal or driver on App).
+Only exception: forced collection at day 60 of overdue.
+
+Reason: Industrial GPS has CEP95 ~6.2m precision. HDOP/PDOP in construction zones cause spatial false positives that would trigger erroneous contract transitions.
+
+# THE 7 WORKERS
+
+All workers implement IHostedService. Each has its own Conductor Track in conductor/tracks/.
+
+## Operational Domain (operates on equipment.current_status)
+
+Worker 1 — TelemetryIngestionWorker
+- Cron every 5 min. Polls AEMP 2.0 endpoints.
+- Writes: telemetry_readings (partitioned by month), telemetry_alerts (GEOFENCE_BREACH only).
+- SLA: entire fleet in < 5 min.
+
+Worker 2 — AlertEvaluationWorker
+- Event-driven: new telemetry_readings row.
+- Reads equipment_thresholds (configurable per type/model). NEVER hardcode thresholds.
+- Applies vibration base profiles from equipment_load_profiles to avoid compactor false positives.
+- CRITICAL/SHUTDOWN → publishes event for Worker 3.
+- SLA: < 30 sec per reading.
+
+Worker 3 — MaintenanceOrchestrationWorker
+- Reactive: CRITICAL/SHUTDOWN alerts from Worker 2.
+- Preventive: hourly cron against maintenance_schedules.
+- DUAL TRIGGER: by hour meter (next_due_hours) OR by calendar (next_due_date), whichever comes first.
+- Transitions equipment.current_status → IN_MAINTENANCE.
+- Publishes event (Worker 7 consumes for SUSPENDED_MAINTENANCE).
+- SLA corrective: < 2 min. SLA preventive: < 10 min entire fleet.
+
+Worker 6 — ComplianceDocumentWorker
+- Event-driven: completed work order. Daily cron: certification expiration.
+- Generates PDFs: NOM-004 maintenance log (12-month retention), LOTO protocol, guard reinstallation certificate, DC-3 operator records.
+- LOTO timeout: LOTO_APPLIED > loto_timeout_hours → alert supervisor. NEVER auto-unlock.
+- Alerts 30 days before ANSI A92 expiration on aerial platforms.
+
+## Financial Domain (operates on rental_contracts.status)
+
+Worker 4 — FinancialImpactWorker
+- Event-driven: damage_assessments.status = 'APPROVED_FOR_CHARGE'.
+- If damage > available deposit: amount_from_deposit = balance, amount_direct_bill = excess.
+- Migrates deposit: accounting_classification → RECOGNIZED_INCOME.
+- Publishes event for Worker 5 (NEW CFDI Ingreso). NEVER touches monthly invoice.
+
+Worker 5 — CfdiLifecycleWorker
+- Emits CFDIs (Ingreso rent, Ingreso damage, Egreso credit note, Pago complement).
+- Integrates with PAC (Facturapi, SW Sapiens, etc.).
+- Monitors cancellation_status for async SAT cancellations.
+- SLA stamping: < 60 sec with automatic retries.
+
+Worker 7 — ContractLifecycleWorker
+- 9-state machine. Event-driven + user actions.
+- RESERVED → ACTIVE requires: deposit received + pre-delivery checklist + DC-3 operator.
+- RETURNING requires human action (except day-60 forced collection).
+- INSPECTION → CLOSED only if post-return checklist has no findings.
+- OVERDUE blocks CLOSED but allows operational transitions.
+- Aging: day 30 notification, day 60 forced collection, day 90 legal collection.
+
+# STATE MACHINES
+
+## equipment.current_status
+```
+AVAILABLE → RENTED → IN_MAINTENANCE → AVAILABLE (LOTO gate required)
+AVAILABLE → DECOMMISSIONED
+IN_MAINTENANCE → DECOMMISSIONED
+```
+Block: expired ANSI A92 certification prevents IN_MAINTENANCE → AVAILABLE.
+
+## rental_contracts.status
+```
+DRAFT → RESERVED → ACTIVE
+ACTIVE → SUSPENDED_MAINTENANCE → ACTIVE
+ACTIVE → RETURNING → INSPECTION → CLOSED | IN_DISPUTE
+ACTIVE → OVERDUE (coexists with operational transitions)
+IN_DISPUTE → CLOSED (charge paid)
+OVERDUE → CLOSED (debt settled)
+```
+
+## deposits.status
+```
+PENDING_COLLECTION → HELD_AS_LIABILITY (no IVA/ISR)
+HELD_AS_LIABILITY → PARTIALLY_APPLIED | FULLY_APPLIED (migrates to Income)
+PARTIALLY_APPLIED → FULLY_APPLIED | REFUNDED
+HELD_AS_LIABILITY → REFUNDED
+```
+DB constraint: applied_amount + refunded_amount <= amount
+
+## extraordinary_charges.status
+```
+DETECTED → ATTRIBUTED → APPLIED_TO_DEPOSIT → INVOICED
+```
+
+# DATABASE RULES
+
+18 tables in PostgreSQL + PostGIS. Full DDL in docs/ADR-001-spec.md Section 3.
+
+- telemetry_readings: PARTITION BY RANGE (recorded_at) with monthly partitions.
+- telemetry_alerts: spn/fmi are NULLABLE (only apply when alert_type = 'FAULT_CODE').
+- equipment_thresholds: configures thresholds per type/model. NEVER hardcode in worker logic.
+- equipment_load_profiles: linked by make/model/application, NOT per individual equipment.
+- damage_assessments.attribution: 5-value enum (NORMAL_WEAR, TENANT_ATTRIBUTABLE, ENVIRONMENTAL, PRE_EXISTING, UNDER_DISPUTE). NEVER use boolean is_chargeable.
+- geofences.perimeter: GEOGRAPHY(POLYGON, 4326) for real distances on Earth's curvature.
+- deposits: CHECK constraint enforces applied_amount + refunded_amount <= amount.
+
+# COMPLIANCE REFERENCES
+
+- NOM-004-STPS-1999: Maintenance records (12-month retention), mandatory LOTO, guard reinstallation.
+- NOM-009-STPS-2011: Aerial platforms require annual ANSI A92 certification. Expired = blocked.
+- ISO 15143-3 (AEMP 2.0): Telemetry standard. Required fields: location, engine_hours, fuel_used, fault_codes.
+- J1939: Diagnostic protocol. SPN+FMI fault codes.
+- CFDI 4.0: Three exclusive flows. PPD for rentals. Payment complements mandatory.
+- NIF D-5 / Resolution 42/IVA/2019-RF: Deposits as Liability until application. No IVA/ISR until Income migration.
+
+# CODE CONVENTIONS
+
+- Worker names: PascalCase + Worker suffix (e.g., TelemetryIngestionWorker).
+- All workers implement IHostedService.
+- UUIDs as PKs in all tables (gen_random_uuid()).
+- Timestamps always TIMESTAMPTZ (UTC).
+- JSONB for semi-structured fields (checklist_items, parts_used, photos).
+- ENUMs defined at PostgreSQL level, NOT as magic strings in code.
+- All operations MUST be idempotent. Re-processing an event must not create duplicates.
