@@ -15,13 +15,17 @@
 
 services:
   # ---------------------------------------------------------------------------
-  # PostgreSQL 16 + PostGIS 3.4
-  # Imagen oficial multi-arch (amd64 + arm64).
+  # PostgreSQL 16 + PostGIS 3.4 (Multi-arch: amd64 + arm64)
+  # La imagen oficial postgis/postgis:16-3.4 NO tiene variante ARM64.
+  # Se usa un Dockerfile custom basado en postgres:16-alpine (multi-arch nativa)
+  # que instala PostGIS desde los repos de Alpine.
   # Requerido por ADR-001: GEOGRAPHY(POLYGON, 4326), ST_Covers, gen_random_uuid.
   # El script init-db.sql crea extensiones y ENUMs al primer arranque.
   # ---------------------------------------------------------------------------
   db:
-    image: postgis/postgis:16-3.4
+    build:
+      context: ./docker/postgres
+      dockerfile: Dockerfile
     container_name: rentmaq-db
     restart: unless-stopped
     profiles: ["infra", "dev", "ci"]
@@ -37,7 +41,6 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-rentmaq} -d ${DB_NAME:-rentmaq_db}"]
       # PostGIS tarda mas que PostgreSQL vanilla en inicializar.
-      # interval y retries ajustados para evitar falsos negativos en ARM (emulacion).
       interval: 5s
       timeout: 5s
       retries: 15
