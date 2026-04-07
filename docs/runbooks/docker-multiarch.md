@@ -26,9 +26,10 @@ No se necesita `--platform` en el `compose.yml` ni en los `Dockerfile`. Docker r
 
 ### Imagenes usadas y soporte multi-arch
 
-| Imagen | Tag | amd64 | arm64 | Fuente |
-|--------|-----|-------|-------|--------|
-| postgis/postgis | 16-3.4 | Si | Si | Docker Hub |
+| Imagen | Tag | amd64 | arm64 | Notas |
+|--------|-----|-------|-------|-------|
+| postgis/postgis | 16-3.4 | Si | **No** | No publica ARM64. Usamos Dockerfile custom (`docker/postgres/Dockerfile`) basado en `postgres:16-bookworm` + paquete `postgresql-16-postgis-3` |
+| postgres | 16-bookworm | Si | Si | Imagen base para nuestro Dockerfile custom de PostGIS |
 | redis | 7-alpine | Si | Si | Docker Hub |
 | mcr.microsoft.com/dotnet/sdk | 8.0 | Si | Si | Microsoft Container Registry |
 | mcr.microsoft.com/dotnet/aspnet | 8.0 | Si | Si | Microsoft Container Registry |

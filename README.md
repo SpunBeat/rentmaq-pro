@@ -22,7 +22,7 @@ RentMaq Pro gestiona el ciclo de vida completo de maquinaria ligera en renta: mi
 - Docker y Docker Compose V2 (para infraestructura local)
 - Gemini CLI con extension Conductor (opcional, para flujo de desarrollo asistido)
 
-> **Multi-arch:** El entorno Docker funciona sin modificaciones en MacBook Apple Silicon (ARM64), GitHub Actions (AMD64) y cloud Linux (AMD64). Todas las imagenes publican manifiestos multi-arch. Ver `docs/runbooks/docker-multiarch.md`.
+> **Multi-arch:** El entorno Docker funciona sin modificaciones en MacBook Apple Silicon (ARM64), GitHub Actions (AMD64) y cloud Linux (AMD64). La imagen de PostGIS usa un Dockerfile custom basado en `postgres:16-bookworm` porque la oficial `postgis/postgis:16-3.4` no publica variante ARM64. Ver `docs/runbooks/docker-multiarch.md`.
 
 ### Pasos
 
@@ -70,6 +70,9 @@ rentmaq-pro/
 ├── CLAUDE.md                       # Reglas de arquitectura para Claude Code / Conductor
 ├── README.md
 ├── compose.yml                     # Docker Compose V2 (profiles: infra, dev, ci)
+├── docker/
+│   └── postgres/
+│       └── Dockerfile              # postgres:16-bookworm + PostGIS 3 (multi-arch)
 ├── conductor/                      # Google Conductor (desarrollo asistido)
 │   ├── product.md                  # Vision del producto
 │   ├── product-guidelines.md       # Reglas de negocio y desacoplamiento
