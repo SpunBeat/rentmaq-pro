@@ -61,6 +61,31 @@ curl http://localhost:5000/health
 
 ---
 
+## Swagger (OpenAPI)
+
+La API expone documentacion interactiva con [Swashbuckle.AspNetCore](https://github.com/domaindrivendev/Swashbuckle.AspNetCore) (`AddSwaggerGen`, `UseSwagger`, `UseSwaggerUI`). El host registra tambien `AddEndpointsApiExplorer()` para que los controladores convencionales aparezcan en el documento OpenAPI.
+
+### Cuando esta activo
+
+El middleware de Swagger **solo se habilita en entorno `Development`**. En `Program.cs`, `UseSwagger()` y `UseSwaggerUI()` estan dentro de `if (app.Environment.IsDevelopment())`, asi que en Staging/Produccion no se publica la UI ni el endpoint JSON por defecto (evita exponer la superficie de la API en internet sin una decision explicita).
+
+### Como abrirlo
+
+| Como ejecutas la API | URL tipica de la UI |
+|----------------------|---------------------|
+| `dotnet run --project src/RentMaq.API` (perfil **https** en `launchSettings.json`) | `https://localhost:7236/swagger` |
+| Mismo comando, perfil **http** | `http://localhost:5250/swagger` |
+| `docker compose --profile dev` (mapeo `5000:8080` y `ASPNETCORE_ENVIRONMENT=Development` por defecto) | `http://localhost:5000/swagger` |
+
+La especificacion OpenAPI en JSON suele estar en `/swagger/v1/swagger.json` (nombre de documento por defecto `v1`). Swagger UI la consume para listar operaciones, esquemas y el boton **Try it out** para invocar endpoints desde el navegador.
+
+### Notas de uso
+
+- Los endpoints que requieran autenticacion mostraran la operacion en Swagger, pero las pruebas desde la UI fallaran hasta que configures cabeceras (por ejemplo `Authorization`) si el proyecto las define mas adelante.
+- Si cambias puertos (`applicationUrl`, mapeos de Docker o variables `ASPNETCORE_HTTP_PORTS`), ajusta la URL base; la ruta `/swagger` se mantiene.
+
+---
+
 ## Estructura del Proyecto
 
 ```
