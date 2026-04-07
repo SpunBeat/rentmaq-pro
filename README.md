@@ -39,7 +39,7 @@ cp .env.example .env
 docker compose --profile infra up -d
 
 # 4. Aplicar migraciones de base de datos
-dotnet ef database update --project src/RentMaq.Infrastructure
+dotnet ef database update --project src/RentMaq.Infrastructure --startup-project src/RentMaq.API
 
 # 5. Ejecutar backend (API + Workers)
 dotnet run --project src/RentMaq.API

@@ -222,7 +222,7 @@ public class RentMaqDbContext : DbContext
             e.Property(x => x.CreatedAt).HasColumnName("created_at");
             e.Property(x => x.UpdatedAt).HasColumnName("updated_at");
             e.HasIndex(x => new { x.EquipmentId, x.ExecutionDate });
-            e.HasIndex(x => x.Status).HasFilter("status != 'COMPLETED'");
+            e.HasIndex(x => x.Status);
         });
 
         // EquipmentCertification
