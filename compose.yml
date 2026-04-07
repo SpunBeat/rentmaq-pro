@@ -1,52 +1,124 @@
 # =============================================================================
-# RentMaq Pro — Docker Compose
-# Stack: .NET 8 API + PostgreSQL 16 / PostGIS 3.4
-# Variables centralizadas en .env (ver .env.example como referencia)
+# RentMaq Pro — Docker Compose V2
+# Stack: .NET 8 API + PostgreSQL 16/PostGIS 3.4 + Redis 7 + Angular 18
+#
+# Multi-arch: todas las imagenes publican manifiestos linux/amd64 + linux/arm64.
+# Funciona sin modificaciones en MacBook Apple Silicon, GitHub Actions y cloud.
+#
+# Profiles:
+#   docker compose --profile infra up -d     Solo BD + Redis (dev local con dotnet run)
+#   docker compose --profile dev up -d       Stack completo (BD + Redis + API + Web)
+#   docker compose --profile ci up -d        Solo BD + Redis (tests de integracion en CI)
+#
+# Variables: leidas automaticamente desde .env (ver .env.example)
 # =============================================================================
 
 services:
   # ---------------------------------------------------------------------------
-  # PostgreSQL 16 + PostGIS 3.4 (requerido por ADR-001: GEOGRAPHY, ST_Covers)
-  # Npgsql 8.0.x soporta PG 12–16; PG 16 es la versión estable más reciente.
+  # PostgreSQL 16 + PostGIS 3.4
+  # Imagen oficial multi-arch (amd64 + arm64).
+  # Requerido por ADR-001: GEOGRAPHY(POLYGON, 4326), ST_Covers, gen_random_uuid.
+  # El script init-db.sql crea extensiones y ENUMs al primer arranque.
   # ---------------------------------------------------------------------------
   db:
     image: postgis/postgis:16-3.4
     container_name: rentmaq-db
     restart: unless-stopped
+    profiles: ["infra", "dev", "ci"]
     environment:
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER:-rentmaq}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-devpassword123}
+      POSTGRES_DB: ${DB_NAME:-rentmaq_db}
     ports:
-      - "${DB_PORT}:5432"
+      - "${DB_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-rentmaq} -d ${DB_NAME:-rentmaq_db}"]
+      # PostGIS tarda mas que PostgreSQL vanilla en inicializar.
+      # interval y retries ajustados para evitar falsos negativos en ARM (emulacion).
       interval: 5s
       timeout: 5s
+      retries: 15
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Redis 7 (Alpine, multi-arch nativo)
+  # Usado como message bus entre workers y cache de sesiones.
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: rentmaq-redis
+    restart: unless-stopped
+    profiles: ["infra", "dev", "ci"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: >
+      redis-server
+      --save 60 1
+      --loglevel warning
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
       retries: 10
 
   # ---------------------------------------------------------------------------
   # RentMaq API (.NET 8)
+  # Incluye los 7 workers como IHostedService (no requieren procesos separados).
+  # Build multi-stage: SDK para compilar, aspnet:8.0 para runtime.
+  # NO se especifica --platform: Docker resuelve la arquitectura automaticamente.
   # ---------------------------------------------------------------------------
   api:
     build:
       context: .
-      dockerfile: src/Dockerfile
-      target: final
+      dockerfile: src/RentMaq.API/Dockerfile
     container_name: rentmaq-api
     restart: unless-stopped
+    profiles: ["dev"]
     ports:
       - "5000:8080"
+      - "5001:8081"
     environment:
-      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT}
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Development}
+      ASPNETCORE_HTTP_PORTS: "8080"
+      ASPNETCORE_HTTPS_PORTS: "8081"
       ConnectionStrings__RentMaqDb: >-
-        Host=db;Port=5432;Database=${DB_NAME};
-        Username=${DB_USER};Password=${DB_PASSWORD}
+        Host=db;Port=5432;Database=${DB_NAME:-rentmaq_db};
+        Username=${DB_USER:-rentmaq};Password=${DB_PASSWORD:-devpassword123}
+      Redis__ConnectionString: "redis:6379"
+      # -- Telemetria AEMP 2.0 --
+      AEMP__PollingIntervalMinutes: ${AEMP_POLLING_INTERVAL_MINUTES:-5}
+      # -- PAC para CFDI (solo produccion) --
+      PAC__Provider: ${PAC_PROVIDER:-}
+      PAC__ApiKey: ${PAC_API_KEY:-}
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # RentMaq Web (Angular 18 + nginx)
+  # Solo para desarrollo local. En produccion, Angular se compila como static
+  # files servidos por nginx o el propio API.
+  # Build: node:20-alpine (multi-arch) -> nginx:alpine (multi-arch).
+  # ---------------------------------------------------------------------------
+  web:
+    build:
+      context: ./src/RentMaq.Web
+      dockerfile: Dockerfile
+    container_name: rentmaq-web
+    restart: unless-stopped
+    profiles: ["dev"]
+    ports:
+      - "4200:80"
+    depends_on:
+      - api
 
 volumes:
   pgdata:
+  redisdata:
