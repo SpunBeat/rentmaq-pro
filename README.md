@@ -2,7 +2,7 @@
 
 Sistema enterprise de renta de maquinaria ligera con telemetria ISO 15143-3, cumplimiento NOM-004-STPS y facturacion CFDI 4.0.
 
-**Stack:** .NET Core 8 | PostgreSQL 16 + PostGIS 3.4 | Angular 18 + Material | Google Conductor + Antigravity
+**Stack:** .NET Core 8 | PostgreSQL 16 + PostGIS 3.4 | Redis 7 | Angular 18 + Material | Google Conductor + Antigravity
 
 ---
 
@@ -19,8 +19,10 @@ RentMaq Pro gestiona el ciclo de vida completo de maquinaria ligera en renta: mi
 - .NET SDK 8.0+
 - PostgreSQL 16 con extension PostGIS 3.4
 - Node.js 20 LTS + Angular CLI 18
-- Docker y Docker Compose (para infraestructura local)
+- Docker y Docker Compose V2 (para infraestructura local)
 - Gemini CLI con extension Conductor (opcional, para flujo de desarrollo asistido)
+
+> **Multi-arch:** El entorno Docker funciona sin modificaciones en MacBook Apple Silicon (ARM64), GitHub Actions (AMD64) y cloud Linux (AMD64). Todas las imagenes publican manifiestos multi-arch. Ver `docs/runbooks/docker-multiarch.md`.
 
 ### Pasos
 
@@ -33,8 +35,8 @@ cd rentmaq-pro
 cp .env.example .env
 # Editar .env con credenciales locales
 
-# 3. Levantar infraestructura (PostgreSQL + PostGIS)
-docker compose up -d
+# 3. Levantar infraestructura (PostgreSQL + PostGIS + Redis)
+docker compose --profile infra up -d
 
 # 4. Aplicar migraciones de base de datos
 dotnet ef database update --project src/RentMaq.Infrastructure
@@ -55,6 +57,8 @@ curl http://localhost:5000/health
 
 > **Nota:** Los 7 workers se levantan automaticamente con el host de la API. Todos implementan `IHostedService` y se registran en el contenedor de dependencias al iniciar la aplicacion. No requieren procesos separados.
 
+> **Stack completo en Docker:** Si prefieres correr todo en contenedores (sin `dotnet run` local), usa `docker compose --profile dev up -d`. Esto levanta BD + Redis + API + Web en un solo comando.
+
 ---
 
 ## Estructura del Proyecto
@@ -62,9 +66,10 @@ curl http://localhost:5000/health
 ```
 rentmaq-pro/
 ├── .cursorrules                    # Reglas de arquitectura para Cursor AI
+├── .env.example                    # Plantilla de variables de entorno
 ├── CLAUDE.md                       # Reglas de arquitectura para Claude Code / Conductor
 ├── README.md
-├── compose.yml
+├── compose.yml                     # Docker Compose V2 (profiles: infra, dev, ci)
 ├── conductor/                      # Google Conductor (desarrollo asistido)
 │   ├── product.md                  # Vision del producto
 │   ├── product-guidelines.md       # Reglas de negocio y desacoplamiento
@@ -82,10 +87,15 @@ rentmaq-pro/
 │   ├── ADR-001-spec.md             # Esquema de BD + Workers (decision vigente)
 │   ├── architecture/               # Diagramas C4, flujos, state machines
 │   ├── runbooks/                   # Procedimientos operativos
+│   │   ├── loto-timeout.md         # Timeout LOTO: alerta, no desbloqueo
+│   │   ├── geofence-breach.md      # Evaluacion de falsos positivos GPS
+│   │   ├── fiscal-damage-charge.md # Flujo cargo por dano -> CFDI
+│   │   └── docker-multiarch.md     # Troubleshooting multi-arch (ARM/AMD)
 │   ├── onboarding/                 # Guias para nuevos desarrolladores
 │   └── normativas/                 # Referencias NOM-004, NOM-009, CFDI 4.0
 ├── src/
 │   ├── RentMaq.API/                # Host ASP.NET Core (API REST + Workers)
+│   │   └── Dockerfile              # Multi-stage: SDK build -> aspnet runtime
 │   ├── RentMaq.Domain/             # Entidades, enums, value objects, interfaces
 │   │   ├── Equipment/              # Bounded context: Telemetria y Equipos
 │   │   ├── Maintenance/            # Bounded context: Mantenimiento y Compliance
@@ -100,11 +110,13 @@ rentmaq-pro/
 │   │   ├── Operational/            # Workers 1, 2, 3, 6 (dominio fisico)
 │   │   └── Financial/              # Workers 4, 5, 7 (dominio financiero)
 │   ├── RentMaq.Web/                # Angular 18 + Material (frontend)
+│   │   └── Dockerfile              # node:20-alpine build -> nginx:alpine
 │   └── RentMaq.Tests/              # Tests unitarios e integracion
 │       ├── Workers/
 │       ├── Domain/
 │       └── Integration/
 └── scripts/
+    ├── init-db.sql                 # PostGIS + uuid-ossp + 9 ENUMs (primer arranque)
     ├── seed-data.sql               # Datos de prueba (equipos, tenants, umbrales)
     └── create-partitions.sql       # Crea particiones mensuales de telemetry_readings
 ```
@@ -160,12 +172,12 @@ Cada worker implementa `IHostedService`. Su especificacion detallada esta en `do
 
 El proyecto utiliza documentacion viva: los documentos en `docs/` evolucionan con el codigo y se mantienen actualizados como parte del flujo de desarrollo. Cada PR que modifica comportamiento documentado debe actualizar el documento correspondiente.
 
-| Directorio | Proposito |
-|------------|-----------|
-| `docs/architecture/` | ADRs, diagramas C4, state machines, interaccion entre workers |
-| `docs/runbooks/` | Procedimientos operativos para alertas y flujos criticos |
-| `docs/onboarding/` | Guias para nuevos desarrolladores |
-| `docs/normativas/` | Resumenes ejecutivos de normativas aplicables al sistema |
+| Directorio | Proposito | Documentos clave |
+|------------|-----------|-----------------|
+| `docs/architecture/` | ADRs, diagramas C4, state machines, interaccion entre workers | `state-machines.md`, `worker-interactions.md` |
+| `docs/runbooks/` | Procedimientos operativos para alertas y flujos criticos | `loto-timeout.md`, `geofence-breach.md`, `fiscal-damage-charge.md`, `docker-multiarch.md` |
+| `docs/onboarding/` | Guias para nuevos desarrolladores | `first-day.md`, `architecture-overview.md` |
+| `docs/normativas/` | Resumenes ejecutivos de normativas aplicables al sistema | `nom-004-resumen.md`, `cfdi-flujos.md` |
 
 ---
 
